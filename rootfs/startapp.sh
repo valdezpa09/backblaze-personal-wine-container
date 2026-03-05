@@ -12,7 +12,7 @@ pinned_bz_version_file="/PINNED_BZ_VERSION"
 pinned_bz_version=$(sed -n '1p' "$pinned_bz_version_file")
 pinned_bz_version_url=$(sed -n '2p' "$pinned_bz_version_file")
 
-export FORCE_LATEST_UPDATE="true" #disable pinned version since URL is excluded from archive.org
+export FORCE_LATEST_UPDATE="${FORCE_LATEST_UPDATE:-true}" #disable pinned version since URL is excluded from archive.org
 export WINEARCH="win64"
 export WINEDLLOVERRIDES="mscoree=" # Disable Mono installation
 
@@ -25,10 +25,54 @@ if [ ! -f "${WINEPREFIX}system.reg" ]; then
     echo "WINE: Wine not initialized, initializing"
     wineboot -i
     WINETRICKS_ACCEPT_EULA=1 winetricks -q -f dotnet48
-    # Set Windows version to Windows 10
-    WINETRICKS_ACCEPT_EULA=1 winetricks -q win10
-    log_message "WINE: Initialization done and set to Windows 10"
+    # Install the Visual C++ 2019 runtime so bzserv.exe's ServiceMain can use
+    # native msvcp140/vcruntime140 rather than Wine's built-in stubs.  Without
+    # this, C++ exception handling inside the service may behave differently and
+    # prevent bzserv.exe from ever calling SetServiceStatus(SERVICE_RUNNING).
+    WINETRICKS_ACCEPT_EULA=1 winetricks -q vcrun2019
+    log_message "WINE: Initialization done"
 fi
+
+# Always enforce Windows 10 – Backblaze >= 9.2 rejects anything older.
+# This also upgrades existing prefixes that were configured as Windows 8.
+WINETRICKS_ACCEPT_EULA=1 winetricks -q win10
+log_message "WINE: Windows version set to Windows 10"
+
+# Directly set the Windows NT registry keys that Backblaze reads to determine
+# the OS version.  winetricks win10 sets the Wine-internal "Version" value but
+# some apps bypass that and read these keys from the NT hive directly.
+# Build 19045 = Windows 10 22H2 (current supported release).
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMajorVersionNumber" /t REG_DWORD /d 10 /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMinorVersionNumber" /t REG_DWORD /d 0 /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentBuildNumber" /t REG_SZ /d "19045" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentVersion" /t REG_SZ /d "10.0" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "ProductName" /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "EditionID" /t REG_SZ /d "Professional" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "InstallationType" /t REG_SZ /d "Client" /f 2>/dev/null
+wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions" /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
+# Also set in ControlSet001 – in some Wine versions CurrentControlSet is not a
+# true symlink so writes to CurrentControlSet don't propagate to ControlSet001,
+# which is what wbemprox may read when evaluating Win32_OperatingSystem.ProductType.
+wine reg add "HKLM\\SYSTEM\\ControlSet001\\Control\\ProductOptions" /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
+log_message "WINE: Windows 10 NT registry keys enforced (build 19045)"
+
+# Per-app version overrides – belt-and-suspenders in case an old AppDefaults
+# entry in the prefix overrides the global "Version" key for any Backblaze exe.
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\install_backblaze.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzbui.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzserv.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzmenu.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+
+# Set the global Wine version so every subprocess (including installer child
+# processes) sees Windows 10.  winetricks win10 is supposed to do this via
+# HKCU\Software\Wine\Version but is not reliably persisting the key.
+wine reg add "HKCU\\Software\\Wine" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+log_message "WINE: Global Wine version forced to win10"
+
+# Hide Wine's ntdll exports (wine_get_version, wine_get_build_id, etc.) so
+# that Backblaze cannot detect it is running under Wine and refuse to start.
+wine reg add "HKCU\\Software\\Wine" /v "HideWineExports" /t REG_DWORD /d 1 /f 2>/dev/null
+log_message "WINE: HideWineExports set (Wine detection disabled)"
 
 #Configure Extra Mounts
 for x in {d..z}
@@ -76,6 +120,15 @@ handle_error() {
 }
 
 fetch_and_install() {
+    # Unlock bzupdates in case a previous start_app run locked it to chmod 555.
+    # The Backblaze installer writes there during upgrades; a locked directory
+    # causes the installer to fail with a non-zero exit code.
+    local bz_updates_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzupdates"
+    if [ -d "$bz_updates_dir" ]; then
+        chmod 755 "$bz_updates_dir"
+        log_message "INSTALLER: bzupdates unlocked for installer run"
+    fi
+
     cd "$install_exe_path" || handle_error "INSTALLER: can't navigate to $install_exe_path"
     if [ "$FORCE_LATEST_UPDATE" = "true" ]; then
         log_message "INSTALLER: FORCE_LATEST_UPDATE=true - downloading latest version"
@@ -84,15 +137,69 @@ fetch_and_install() {
         log_message "INSTALLER: FORCE_LATEST_UPDATE=false - downloading pinned version $pinned_bz_version from archive.org"
         curl -A "$custom_user_agent" -L "$pinned_bz_version_url" --output "install_backblaze.exe" || handle_error "INSTALLER: error downloading from $pinned_bz_version_url"
     fi
+    # Patch the embedded RT_MANIFEST resource in the installer PE and in all
+    # existing Backblaze executables to add the Windows 10 <supportedOS> GUID.
+    #
+    # Wine 11.0 implements the Windows 8.1+ GetVersionEx compatibility lie:
+    # any executable whose embedded manifest lacks a Win10 <supportedOS> GUID
+    # sees version 6.2 from GetVersionEx, causing Backblaze to abort with
+    # "MajorVerTooOld".  The outer installer (install_backblaze.exe) passes
+    # once patched, but it immediately invokes bzdoinstall.exe (and other
+    # helpers) from the existing 9.x installation to perform the upgrade.
+    # Those binaries have no Win10 manifest and also see 6.2, so we must
+    # pre-patch every .exe in the existing Backblaze directory as well.
+    local _patcher=/usr/local/bin/patch_pe_manifest.py
+
+    # 1. Patch the freshly downloaded installer.
+    if python3 "$_patcher" "install_backblaze.exe"; then
+        log_message "INSTALLER: PE manifest patched with Windows 10 compatibility GUID"
+    else
+        log_message "INSTALLER: WARNING – manifest patch failed for install_backblaze.exe"
+    fi
+
+    # 2. Pre-patch every .exe in the existing Backblaze installation so that
+    #    child processes launched by the installer also see Windows 10.
+    local _bz_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze"
+    if [ -d "$_bz_dir" ]; then
+        log_message "INSTALLER: pre-patching existing Backblaze executables for Win10 manifest"
+        while IFS= read -r -d '' _exe; do
+            python3 "$_patcher" "$_exe" 2>/dev/null
+        done < <(find "$_bz_dir" -name "*.exe" -print0)
+        log_message "INSTALLER: pre-patching done"
+    fi
+
     log_message "INSTALLER: Starting install_backblaze.exe"
-    WINEARCH="$WINEARCH" WINEPREFIX="$WINEPREFIX" wine64 "install_backblaze.exe" || handle_error "INSTALLER: Failed to install Backblaze"
+    # Run without silent flags – Backblaze's installer is a custom PE, not
+    # NSIS/Inno, and /S is not a recognised flag (causes immediate exit 9).
+    installer_debug_log="/config/install-debug.log"
+    # Rotate log so each run produces a clean file (prevents unbounded growth
+    # and makes it easy to grep the log for the most recent install attempt).
+    mv -f "$installer_debug_log" "${installer_debug_log}.prev" 2>/dev/null || true
+    WINEDEBUG=-all,+ver,+wbemprox WINEARCH="$WINEARCH" WINEPREFIX="$WINEPREFIX" \
+        wine "install_backblaze.exe" 2>"$installer_debug_log" \
+        || handle_error "INSTALLER: Failed to install Backblaze"
 
 }
 
 start_app() {
-    log_message "STARTAPP: Starting Backblaze version $(cat "$local_version_file")"
-    wine64 "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" -noquiet &
-    sleep infinity
+    # Lock the bzupdates directory so Backblaze cannot download and run its own
+    # internal updater.  Without this, the updater kills bzbui.exe mid-run and
+    # the new installer hangs under Wine, leaving the VNC screen black.
+    local bz_updates_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzupdates"
+    mkdir -p "$bz_updates_dir"
+    chmod 555 "$bz_updates_dir"
+    log_message "STARTAPP: bzupdates directory locked (preventing Backblaze self-update)"
+
+    log_message "STARTAPP: Starting Backblaze version $(cat "$local_version_file" 2>/dev/null || echo unknown)"
+
+    # Watchdog loop: restart bzbui.exe whenever it exits.  This handles the
+    # case where the app is killed by an (already-blocked) internal update
+    # attempt or any other unexpected exit.
+    while true; do
+        wine "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" -noquiet
+        log_message "STARTAPP: bzbui.exe exited (code $?), restarting in 10 seconds..."
+        sleep 10
+    done
 }
 
 if [ -f "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" ]; then

@@ -35,6 +35,7 @@ It runs the Backblaze client and starts a virtual X server and a VNC server with
          * [DH Parameters](#dh-parameters)
       * **[Installation Guide](#installation-guide)**
       * [Additional Information](#additional-information)
+      * [How It Works](#how-it-works)
       * [Credits](#credits)
 
 ## Project Status
@@ -277,9 +278,9 @@ container.
 1. Understand, that this docker is a volunteer project, not a commercial product. Some thinkering is to be expected, community based solution finding is encouraged in the issues. If something does not work: look for an open issue about the topic, if there isn't create one. If there is one read through it to see if somebody has found a workaround/fix. If you are a developer I highly encourage you to turn your fix into a Pull Request to allow others to benefit from it.
 1. Check for yourself if using this docker complies with the Backblaze [terms of service](https://www.backblaze.com/company/terms.html)
 1. Modify the following for your setup (in terms of [ports](#ports), [volumes](#volumes) and [environment variables](#environment-variables)) and run it
-   
+
     **(for Unraid users, instead of running this command navigate to the Apps tab, search for this docker and install it)**
-   
+
     **NOTE**: root priviliges may be needed
     ````shell
     docker run \
@@ -293,7 +294,7 @@ container.
 
 1. Open the Web Interface (on the port you specified in the docker run command, in this example 8080):
 2. You may see wine being updated, this will take a couple of minutes
-   
+
    ![image](https://github.com/xela1/backblaze-personal-wine-container/assets/357319/4f401b31-8d1d-40fe-85a3-ec4637c23bf5)
 
 1. The UI of the first step of the Backblaze installer is broken on wine, but it doesn't matter, just insert the email to your backblaze account into the input field. (If the UI does not load for you, look in the top left corner for a white pixel. Move your mouse pointer over that pixel, the pixel will go away, and the UI should load.)
@@ -346,7 +347,7 @@ container.
 
   - **Solution**:
     - Open the Backblaze settings
-    - In the section "Hard Drives" in the first tab "Settings" enable the checkbox for next to the drive D:\ 
+    - In the section "Hard Drives" in the first tab "Settings" enable the checkbox for next to the drive D:\
 
   - **Still not working**:
     - Run
@@ -364,7 +365,7 @@ container.
       ````
 
      - If it doesn't confirm you've mounted the volume in the container correctly for automatic attachment or followed the manual instructions in [volumes](#volumes)
-	 
+
 - I can only see a black screen when I start the container
 
   - **Explanation**: The Docker container may have insufficient permissions to download and install Backblaze.
@@ -401,11 +402,11 @@ container.
     ````
 
   - **For More Information**: See [#98](https://github.com/JonathanTreffler/backblaze-personal-wine-container/issues/98), [#99](https://github.com/JonathanTreffler/backblaze-personal-wine-container/issues/99)
-  
+
 ## Additional Information
 
-1. Warning: The Backblaze client is not an init system (who knew) and doesn't clean up its zombie children. This will cause it to fill up your system's PID limit within a few hours which prevents new processes from being created system-wide, would not recommend.  
-The `--init` flag installs a tiny process that can actually do a few init things like wait()ing children in place of the backblaze client as PID 1.  
+1. Warning: The Backblaze client is not an init system (who knew) and doesn't clean up its zombie children. This will cause it to fill up your system's PID limit within a few hours which prevents new processes from being created system-wide, would not recommend.
+The `--init` flag installs a tiny process that can actually do a few init things like wait()ing children in place of the backblaze client as PID 1.
 2. Backblaze will create a `.bzvol` directory in the root of every hard drive it's configured to back up in which it'll store a full copy of files >100M split into 10M parts. Mount accordingly if you want to preserve SSD erase cycles.
 3. You can browse the files accessible to Backblaze using:
     ````shell
@@ -419,6 +420,66 @@ The `--init` flag installs a tiny process that can actually do a few init things
     ````shell
     docker run ... -e "DISPLAY_WIDTH=1280" -e "DISPLAY_HEIGHT=800" ...
     ````
+
+## How It Works
+
+Backblaze >= 9.2 requires two things that stock Wine does not provide out of the box: it must see a physical-looking disk (not a virtual Wine drive) and it must see Windows 10, not the 6.2 compatibility stub Wine reports by default. This image patches Wine at build time and at runtime to satisfy both requirements.
+
+### Two-stage Dockerfile build
+
+The image is built in two stages:
+
+**Stage 1 (`wine-builder`)** downloads the Wine 11.0 source tarball and compiles only the two DLLs that need patching. Python scripts in `patches/` modify the C source before compilation, avoiding line-number sensitivity across Wine versions. The stage produces:
+
+- `dlls/mountmgr.sys/x86_64-windows/mountmgr.sys`
+- `dlls/kernelbase/x86_64-windows/kernelbase.dll`
+- `dlls/kernelbase/i386-windows/kernelbase.dll` (32-bit WoW64 processes)
+
+The i386 build requires a separate out-of-tree `configure --with-wine64` pass because `--enable-win64` only sets up x86_64 PE rules.
+
+**Stage 2** is the actual container image (based on `jlesage/baseimage-gui`). It installs `winehq-stable` from the WineHQ package repository, then overwrites the stock DLLs with the patched builds from Stage 1.
+
+### Patch: mountmgr.sys — synthetic disk extents
+
+**File:** `patches/patch_mountmgr_disk_extents.py`
+**Modifies:** `dlls/mountmgr.sys/device.c`
+
+Backblaze uses the `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` ioctl to check whether a drive is backed by a physical disk. Stock Wine returns a zero-filled buffer for this ioctl, which causes Backblaze >= 9.2.2.877 to treat every Wine-mounted drive as "unplugged" and refuse to back it up.
+
+The patch replaces the zero-filled stub with a response that returns one synthetic disk extent with a realistic size (`10000 × 255 × 63 × 512` bytes), making Backblaze treat Wine drives as connected physical disks.
+
+### Patch: kernelbase.dll — disable GetVersionEx compatibility lie
+
+**File:** `patches/disable_version_lie.py`
+**Modifies:** `dlls/kernelbase/version.c`
+
+Wine 8+ implements a compatibility lie: any process whose embedded PE manifest lacks the Windows 10 `<supportedOS>` GUID receives version `6.2` from `GetVersionEx` instead of the true `10.0`. Backblaze >= 9.2 aborts with `MajorVerTooOld` when it sees `6.2`.
+
+The patch inserts `return TRUE;` immediately after the `RtlGetVersion()` call succeeds, skipping the entire manifest-checking / version-capping block. This means every process, including the helper binaries that the Backblaze installer extracts at runtime from its embedded cabinet (which cannot be pre-patched because they don't exist on disk before extraction), receives the true OS version.
+
+Both `x86_64-windows/kernelbase.dll` and `i386-windows/kernelbase.dll` are patched so that 32-bit WoW64 processes are also covered.
+
+### Runtime: PE manifest patching
+
+**File:** `rootfs/usr/local/bin/patch_pe_manifest.py`
+
+As a belt-and-suspenders measure, `startapp.sh` also patches the embedded `RT_MANIFEST` resource of `install_backblaze.exe` (and all existing Backblaze `.exe` files) at install/update time to add the Windows 10 `<supportedOS>` GUID. This covers any future Wine versions that may implement the compatibility lie differently.
+
+### Runtime: Windows version enforcement
+
+`startapp.sh` runs `winetricks win10` on every container start and directly writes the `CurrentMajorVersionNumber`, `CurrentBuildNumber`, `ProductName`, and `ProductType` registry keys to ensure Backblaze sees Windows 10 Pro (build 19045) regardless of how the Wine prefix was initially configured. Per-app `AppDefaults` overrides are also set for `bzbui.exe`, `bzserv.exe`, and the installer.
+
+### Runtime: VC++ 2019 runtime (vcrun2019)
+
+On first Wine prefix creation, `startapp.sh` installs the native Visual C++ 2019 runtime via `winetricks vcrun2019`. Without it, C++ exception handling inside `bzserv.exe` may not function correctly and the service may never call `SetServiceStatus(SERVICE_RUNNING)`, causing the Backblaze installer to time out waiting for the service and roll back with "File bzserv.exe failed to arrive on disk".
+
+### Stale lock file after container restart
+
+If you restart the container while a backup cycle is running, a stale lock file may survive.
+
+When this file exists, every new `bztransmit` process exits immediately with "failed to grab fourHourLock lock". The "Backup Now" button in the UI appears to do nothing. Fix it by deleting the lock file.
+
+The next scheduled `bztransmit` spawn will then grab the lock and resume uploading.
 
 # Credits
 This was originally developed by @Atemu (https://github.com/Atemu/backblaze-personal-wine-container).
