@@ -8,16 +8,26 @@ log_file="${STARTUP_LOGFILE:-${WINEPREFIX}dosdevices/c:/backblaze-wine-startapp.
 custom_user_agent="backblaze-personal-wine (JonathanTreffler, +https://github.com/JonathanTreffler/backblaze-personal-wine-container), CFNetwork"
 
 # Extracting variables from the PINNED_VERSION file
+# Guard against a missing file so FORCE_LATEST_UPDATE=false doesn't silently
+# operate with empty strings.
 pinned_bz_version_file="/PINNED_BZ_VERSION"
-pinned_bz_version=$(sed -n '1p' "$pinned_bz_version_file")
-pinned_bz_version_url=$(sed -n '2p' "$pinned_bz_version_file")
+if [ -f "$pinned_bz_version_file" ]; then
+    pinned_bz_version=$(sed -n '1p' "$pinned_bz_version_file")
+    pinned_bz_version_url=$(sed -n '2p' "$pinned_bz_version_file")
+else
+    echo "WARN: $pinned_bz_version_file not found — forcing FORCE_LATEST_UPDATE=true"
+    pinned_bz_version=""
+    pinned_bz_version_url=""
+    FORCE_LATEST_UPDATE="true"
+fi
 
 export FORCE_LATEST_UPDATE="${FORCE_LATEST_UPDATE:-true}" #disable pinned version since URL is excluded from archive.org
 export WINEARCH="win64"
 export WINEDLLOVERRIDES="mscoree=" # Disable Mono installation
 
+# FIX: tee to stdout so log_message output appears in `docker logs` as well as the file
 log_message() {
-    echo "$(date): $1" >> "$log_file"
+    echo "$(date): $1" | tee -a "$log_file"
 }
 
 # Pre-initialize Wine
@@ -33,20 +43,22 @@ if [ ! -f "${WINEPREFIX}system.reg" ]; then
     log_message "WINE: Initialization done"
 fi
 
-# Always enforce Windows 10 – Backblaze >= 9.2 rejects anything older.
+# Always enforce Windows 11 – Backblaze >= 9.4 rejects anything older.
 # This also upgrades existing prefixes that were configured as Windows 8.
-WINETRICKS_ACCEPT_EULA=1 winetricks -q win10
-log_message "WINE: Windows version set to Windows 10"
+# winetricks is idempotent so running on every start is safe, just adds
+# a few seconds. Do NOT remove this — it must run even on existing prefixes.
+WINETRICKS_ACCEPT_EULA=1 winetricks -q win11
+log_message "WINE: Windows version set to Windows 11"
 
 # Directly set the Windows NT registry keys that Backblaze reads to determine
-# the OS version.  winetricks win10 sets the Wine-internal "Version" value but
+# the OS version.  winetricks win11 sets the Wine-internal "Version" value but
 # some apps bypass that and read these keys from the NT hive directly.
-# Build 19045 = Windows 10 22H2 (current supported release).
+# Build 22621 = Windows 11 22H2 (current supported release).
 wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMajorVersionNumber" /t REG_DWORD /d 10 /f 2>/dev/null
 wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMinorVersionNumber" /t REG_DWORD /d 0 /f 2>/dev/null
-wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentBuildNumber" /t REG_SZ /d "19045" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentBuildNumber" /t REG_SZ /d "22621" /f 2>/dev/null
 wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentVersion" /t REG_SZ /d "10.0" /f 2>/dev/null
-wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "ProductName" /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "ProductName" /t REG_SZ /d "Windows 11 Pro" /f 2>/dev/null
 wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "EditionID" /t REG_SZ /d "Professional" /f 2>/dev/null
 wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" /v "InstallationType" /t REG_SZ /d "Client" /f 2>/dev/null
 wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions" /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
@@ -54,20 +66,20 @@ wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions" /v "Prod
 # true symlink so writes to CurrentControlSet don't propagate to ControlSet001,
 # which is what wbemprox may read when evaluating Win32_OperatingSystem.ProductType.
 wine reg add "HKLM\\SYSTEM\\ControlSet001\\Control\\ProductOptions" /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
-log_message "WINE: Windows 10 NT registry keys enforced (build 19045)"
+log_message "WINE: Windows 11 NT registry keys enforced (build 22621)"
 
 # Per-app version overrides – belt-and-suspenders in case an old AppDefaults
 # entry in the prefix overrides the global "Version" key for any Backblaze exe.
-wine reg add "HKCU\\Software\\Wine\\AppDefaults\\install_backblaze.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
-wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzbui.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
-wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzserv.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
-wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzmenu.exe" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\install_backblaze.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzbui.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzserv.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzmenu.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
 
 # Set the global Wine version so every subprocess (including installer child
-# processes) sees Windows 10.  winetricks win10 is supposed to do this via
+# processes) sees Windows 11.  winetricks win11 is supposed to do this via
 # HKCU\Software\Wine\Version but is not reliably persisting the key.
-wine reg add "HKCU\\Software\\Wine" /v "Version" /t REG_SZ /d "win10" /f 2>/dev/null
-log_message "WINE: Global Wine version forced to win10"
+wine reg add "HKCU\\Software\\Wine" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+log_message "WINE: Global Wine version forced to win11"
 
 # Hide Wine's ntdll exports (wine_get_version, wine_get_build_id, etc.) so
 # that Backblaze cannot detect it is running under Wine and refuse to start.
@@ -84,15 +96,16 @@ do
 done
 
 # Set Virtual Desktop
-cd $WINEPREFIX
+# FIX: quote $WINEPREFIX to handle paths with spaces
+cd "$WINEPREFIX" || { log_message "ERROR: Cannot cd to WINEPREFIX ($WINEPREFIX)"; exit 1; }
 if [ "$DISABLE_VIRTUAL_DESKTOP" = "true" ]; then
     log_message "WINE: DISABLE_VIRTUAL_DESKTOP=true - Virtual Desktop mode will be disabled"
     winetricks vd=off
 else
     # Check if width and height are defined
     if [ -n "$DISPLAY_WIDTH" ] && [ -n "$DISPLAY_HEIGHT" ]; then
-    log_message "WINE: Enabling Virtual Desktop mode with $DISPLAY_WIDTH:$DISPLAY_HEIGHT aspect ratio"
-    winetricks vd="$DISPLAY_WIDTH"x"$DISPLAY_HEIGHT"
+        log_message "WINE: Enabling Virtual Desktop mode with $DISPLAY_WIDTH:$DISPLAY_HEIGHT aspect ratio"
+        winetricks vd="${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}"
     else
         # Default aspect ratio
         log_message "WINE: Enabling Virtual Desktop mode with recommended aspect ratio"
@@ -115,7 +128,7 @@ fi
 
 # Function to handle errors
 handle_error() {
-    echo "Error: $1" >> "$log_file"
+    echo "Error: $1" | tee -a "$log_file"
     start_app # Start app even if there is a problem with the updater
 }
 
@@ -137,10 +150,11 @@ fetch_and_install() {
         log_message "INSTALLER: FORCE_LATEST_UPDATE=false - downloading pinned version $pinned_bz_version from archive.org"
         curl -A "$custom_user_agent" -L "$pinned_bz_version_url" --output "install_backblaze.exe" || handle_error "INSTALLER: error downloading from $pinned_bz_version_url"
     fi
+
     # Patch the embedded RT_MANIFEST resource in the installer PE and in all
     # existing Backblaze executables to add the Windows 10 <supportedOS> GUID.
     #
-    # Wine 11.0 implements the Windows 8.1+ GetVersionEx compatibility lie:
+    # Wine 10+ implements the Windows 8.1+ GetVersionEx compatibility shim:
     # any executable whose embedded manifest lacks a Win10 <supportedOS> GUID
     # sees version 6.2 from GetVersionEx, causing Backblaze to abort with
     # "MajorVerTooOld".  The outer installer (install_backblaze.exe) passes
@@ -150,22 +164,26 @@ fetch_and_install() {
     # pre-patch every .exe in the existing Backblaze directory as well.
     local _patcher=/usr/local/bin/patch_pe_manifest.py
 
-    # 1. Patch the freshly downloaded installer.
-    if python3 "$_patcher" "install_backblaze.exe"; then
-        log_message "INSTALLER: PE manifest patched with Windows 10 compatibility GUID"
+    if [ ! -f "$_patcher" ]; then
+        log_message "INSTALLER: WARNING — $_patcher not found, skipping PE manifest patching"
     else
-        log_message "INSTALLER: WARNING – manifest patch failed for install_backblaze.exe"
-    fi
+        # 1. Patch the freshly downloaded installer.
+        if python3 "$_patcher" "install_backblaze.exe"; then
+            log_message "INSTALLER: PE manifest patched with Windows 11 compatibility GUID"
+        else
+            log_message "INSTALLER: WARNING – manifest patch failed for install_backblaze.exe"
+        fi
 
-    # 2. Pre-patch every .exe in the existing Backblaze installation so that
-    #    child processes launched by the installer also see Windows 10.
-    local _bz_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze"
-    if [ -d "$_bz_dir" ]; then
-        log_message "INSTALLER: pre-patching existing Backblaze executables for Win10 manifest"
-        while IFS= read -r -d '' _exe; do
-            python3 "$_patcher" "$_exe" 2>/dev/null
-        done < <(find "$_bz_dir" -name "*.exe" -print0)
-        log_message "INSTALLER: pre-patching done"
+        # 2. Pre-patch every .exe in the existing Backblaze installation so that
+        #    child processes launched by the installer also see Windows 10.
+        local _bz_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze"
+        if [ -d "$_bz_dir" ]; then
+            log_message "INSTALLER: pre-patching existing Backblaze executables for Win10 manifest"
+            while IFS= read -r -d '' _exe; do
+                python3 "$_patcher" "$_exe" 2>/dev/null
+            done < <(find "$_bz_dir" -name "*.exe" -print0)
+            log_message "INSTALLER: pre-patching done"
+        fi
     fi
 
     log_message "INSTALLER: Starting install_backblaze.exe"
@@ -178,7 +196,6 @@ fetch_and_install() {
     WINEDEBUG=-all,+ver,+wbemprox WINEARCH="$WINEARCH" WINEPREFIX="$WINEPREFIX" \
         wine "install_backblaze.exe" 2>"$installer_debug_log" \
         || handle_error "INSTALLER: Failed to install Backblaze"
-
 }
 
 start_app() {
@@ -195,6 +212,7 @@ start_app() {
     # Watchdog loop: restart bzbui.exe whenever it exits.  This handles the
     # case where the app is killed by an (already-blocked) internal update
     # attempt or any other unexpected exit.
+    # NOTE: this loop never returns — handle_error relies on this behaviour.
     while true; do
         wine "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" -noquiet
         log_message "STARTAPP: bzbui.exe exited (code $?), restarting in 10 seconds..."
@@ -226,8 +244,6 @@ if [ -f "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" ]; then
             return 1 # The local version is higher or equal
         fi
     }
-
-
 
     # Check if auto-updates are disabled
     if [ "$DISABLE_AUTOUPDATE" = "true" ]; then
@@ -292,6 +308,6 @@ if [ -f "${WINEPREFIX}drive_c/Program Files (x86)/Backblaze/bzbui.exe" ]; then
         fi
     fi
 else # Client currently not installed
-    fetch_and_install &&
+    fetch_and_install
     start_app
 fi

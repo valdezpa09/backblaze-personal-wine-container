@@ -1,0 +1,55 @@
+FROM jlesage/baseimage-gui:ubuntu-24.04-v4
+
+ENV WINEPREFIX /config/wine/
+
+ENV LANG en_US.UTF-8
+
+ENV APP_NAME="Backblaze Personal Backup"
+
+ENV FORCE_LATEST_UPDATE="true"
+
+ENV DISABLE_AUTOUPDATE="true"
+
+ENV DISABLE_VIRTUAL_DESKTOP="false"
+
+ENV DISPLAY_WIDTH="900"
+
+ENV DISPLAY_HEIGHT="700"
+
+# Disable WINE Debug messages
+ENV WINEDEBUG -all
+
+# Set DISPLAY to allow GUI programs to be run
+ENV DISPLAY=:0
+
+# win11 winetricks verb requires a 64-bit prefix
+ENV WINEARCH win64
+
+RUN apt-get update && \
+    apt-get install -y curl software-properties-common gnupg2 winbind xvfb 7zip cabextract \
+        python3 python3-pefile && \
+    dpkg --add-architecture i386 && \
+    mkdir -pm755 /etc/apt/keyrings && \
+    curl -fsSL https://dl.winehq.org/wine-builds/winehq.key | gpg --dearmor -o /etc/apt/keyrings/winehq-archive.key && \
+    echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/ubuntu/ noble main" \
+        > /etc/apt/sources.list.d/winehq.list && \
+    apt-get update && \
+    apt-get install -y winehq-stable=10.0* && \
+    curl -fsSL https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
+        -o /usr/local/bin/winetricks && \
+    chmod +x /usr/local/bin/winetricks && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y locales && \
+    sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
+    dpkg-reconfigure --frontend=noninteractive locales && \
+    update-locale LANG=en_US.UTF-8
+
+EXPOSE 5900
+
+# rootfs/ contains:
+#   startapp.sh                          — main startup script
+#   PINNED_BZ_VERSION                    — fallback pinned Backblaze version + URL
+#   usr/local/bin/patch_pe_manifest.py   — PE manifest patcher for Win10 GUID
+COPY rootfs/ /
+
+RUN chmod +x /startapp.sh && \
+    chmod +x /usr/local/bin/patch_pe_manifest.py
