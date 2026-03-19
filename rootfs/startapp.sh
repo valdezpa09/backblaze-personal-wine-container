@@ -34,10 +34,10 @@ log_message() {
 if [ ! -f "${WINEPREFIX}system.reg" ]; then
     echo "WINE: Wine not initialized, initializing"
     wineboot -i
-    # dotnet48 internally sets the Windows version to XP during installation.
-    # vcrun2019 may also alter version state.
-    # We enforce win11 AFTER both of these so they cannot override it.
-    WINETRICKS_ACCEPT_EULA=1 winetricks -q -f dotnet48
+    # dotnet48 was previously required but internally sets the Windows version
+    # to XP during installation, which fights against our win11 enforcement.
+    # Removed — current Backblaze versions (9.x+) use vcrun2019 only.
+    # Re-add dotnet48 here if Backblaze fails to launch after installation.
     WINETRICKS_ACCEPT_EULA=1 winetricks -q vcrun2019
     log_message "WINE: Initialization done"
 fi
