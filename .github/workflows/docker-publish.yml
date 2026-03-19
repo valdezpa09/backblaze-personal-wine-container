@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        dockerfile: [ubuntu24, ubuntu22, ubuntu20, ubuntu18]
+        dockerfile: [ubuntu24, ubuntu22]
         include:
           - dockerfile: ubuntu24
             tags: |
@@ -34,10 +34,6 @@ jobs:
               ${{ github.ref_name }}
           - dockerfile: ubuntu22
             tags: ubuntu22
-          - dockerfile: ubuntu20
-            tags: ubuntu20
-          - dockerfile: ubuntu18
-            tags: ubuntu18
 
     steps:
       - name: Checkout repository
@@ -49,8 +45,6 @@ jobs:
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login against a Docker registry except on PR
-      # https://github.com/docker/login-action
       - name: Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -59,8 +53,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
-      # https://github.com/docker/metadata-action
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -68,7 +60,6 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: ${{ matrix.tags }}
 
-      # Set up cache
       - name: Setup Docker build cache
         uses: actions/cache@v4
         with:
@@ -77,8 +68,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      # Build and push Docker image with Buildx (don't push on PR)
-      # https://github.com/docker/build-push-action
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5

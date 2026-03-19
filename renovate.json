@@ -1,17 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:base"
   ],
-  "packageRules": [
-    {
-      "matchPackageNames": [
-        "jlesage/baseimage-gui",
-      ],
-      "matchUpdateTypes": [
-        "digest"
-      ],
-      "automerge": true
-    }
-  ]
+  "dockerfile": {
+    "fileMatch": [
+      "Dockerfile\\.ubuntu22$",
+      "Dockerfile\\.ubuntu24$"
+    ]
+  }
 }
