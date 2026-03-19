@@ -169,9 +169,9 @@ fetch_and_install() {
     else
         # 1. Patch the freshly downloaded installer.
         if python3 "$_patcher" "install_backblaze.exe"; then
-            log_message "INSTALLER: PE manifest patched with Windows 11 compatibility GUID"
+            log_message "INSTALLER: PE manifest patch succeeded (embedded or sidecar)"
         else
-            log_message "INSTALLER: WARNING – manifest patch failed for install_backblaze.exe"
+            log_message "INSTALLER: WARNING — manifest patch failed for install_backblaze.exe, MajorVerTooOld likely"
         fi
 
         # 2. Pre-patch every .exe in the existing Backblaze installation so that
