@@ -102,6 +102,14 @@ wine reg add "HKCU\\Software\\Wine\\AppDefaults\\install_backblaze.exe" /v "Vers
 wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzbui.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
 wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzserv.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
 wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzmenu.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+# Installer child processes — these are extracted at runtime so we can't
+# pre-patch their manifests. AppDefaults ensures GetVersionEx() returns
+# win11 for them regardless of their embedded manifest content.
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzdoinstall.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzdownload.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzinstall.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzreports.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
+wine reg add "HKCU\\Software\\Wine\\AppDefaults\\bzfilelist.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
 
 # Set the global Wine version so every subprocess (including installer child
 # processes) sees Windows 11.  winetricks win11 is supposed to do this via
@@ -224,6 +232,22 @@ fetch_and_install() {
     WINEDEBUG=-all,+ver,+wbemprox WINEARCH="$WINEARCH" WINEPREFIX="$WINEPREFIX" \
         wine "install_backblaze.exe" 2>"$installer_debug_log" \
         || handle_error "INSTALLER: Failed to install Backblaze"
+
+    # Post-install: patch sidecar manifests onto every freshly installed
+    # Backblaze executable. The installer extracts child processes (bzdoinstall.exe,
+    # bzdownload.exe, etc.) to the install dir at runtime — they don't exist
+    # before the installer runs so we can't pre-patch them. Without a Win10
+    # <supportedOS> GUID (embedded or sidecar), Wine 11's GetVersionEx()
+    # compatibility shim returns 6.2 to these 32-bit processes, causing
+    # MajorVerTooOld on next startup.
+    local _bz_install_dir="${WINEPREFIX}drive_c/Program Files (x86)/Backblaze"
+    if [ -f "$_patcher" ] && [ -d "$_bz_install_dir" ]; then
+        log_message "INSTALLER: post-install patching all Backblaze executables"
+        while IFS= read -r -d '' _exe; do
+            python3 "$_patcher" "$_exe" 2>/dev/null || true
+        done < <(find "$_bz_install_dir" -name "*.exe" -print0)
+        log_message "INSTALLER: post-install patching done"
+    fi
 }
 
 start_app() {
