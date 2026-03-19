@@ -23,7 +23,7 @@ fi
 
 export FORCE_LATEST_UPDATE="${FORCE_LATEST_UPDATE:-true}" #disable pinned version since URL is excluded from archive.org
 export WINEARCH="win64"
-export WINEDLLOVERRIDES="mscoree=" # Disable Mono installation
+export WINEDLLOVERRIDES="mscoree=,wbemprox="
 
 # FIX: tee to stdout so log_message output appears in `docker logs` as well as the file
 log_message() {
