@@ -34,19 +34,17 @@ log_message() {
 if [ ! -f "${WINEPREFIX}system.reg" ]; then
     echo "WINE: Wine not initialized, initializing"
     wineboot -i
+    # dotnet48 internally sets the Windows version to XP during installation.
+    # vcrun2019 may also alter version state.
+    # We enforce win11 AFTER both of these so they cannot override it.
     WINETRICKS_ACCEPT_EULA=1 winetricks -q -f dotnet48
-    # Install the Visual C++ 2019 runtime so bzserv.exe's ServiceMain can use
-    # native msvcp140/vcruntime140 rather than Wine's built-in stubs.  Without
-    # this, C++ exception handling inside the service may behave differently and
-    # prevent bzserv.exe from ever calling SetServiceStatus(SERVICE_RUNNING).
     WINETRICKS_ACCEPT_EULA=1 winetricks -q vcrun2019
     log_message "WINE: Initialization done"
 fi
 
-# Always enforce Windows 11 – Backblaze >= 9.4 rejects anything older.
-# This also upgrades existing prefixes that were configured as Windows 8.
-# winetricks is idempotent so running on every start is safe, just adds
-# a few seconds. Do NOT remove this — it must run even on existing prefixes.
+# Always enforce Windows 11 AFTER any winetricks installs that may have
+# altered the version (dotnet48 sets winxp internally during install).
+# This runs on every container start — it is idempotent and intentional.
 WINETRICKS_ACCEPT_EULA=1 winetricks -q win11
 log_message "WINE: Windows version set to Windows 11"
 
@@ -67,6 +65,19 @@ wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions" /v "Prod
 # which is what wbemprox may read when evaluating Win32_OperatingSystem.ProductType.
 wine reg add "HKLM\\SYSTEM\\ControlSet001\\Control\\ProductOptions" /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
 log_message "WINE: Windows 11 NT registry keys enforced (build 22621)"
+
+# 32-bit processes under Wine's wow64 mode read from WOW6432Node, not the
+# standard path. The Backblaze installer spawns 32-bit child processes
+# (bzdoinstall.exe etc) that call GetVersionEx and see 6.2 unless we also
+# write here. Without this, MajorVerTooOld persists even with win11 set.
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMajorVersionNumber" /t REG_DWORD /d 10 /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentMinorVersionNumber" /t REG_DWORD /d 0 /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentBuildNumber" /t REG_SZ /d "22621" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "CurrentVersion" /t REG_SZ /d "10.0" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "ProductName" /t REG_SZ /d "Windows 11 Pro" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "EditionID" /t REG_SZ /d "Professional" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "InstallationType" /t REG_SZ /d "Client" /f 2>/dev/null
+log_message "WINE: WOW6432Node Windows 11 registry keys enforced (32-bit app path)"
 
 # Per-app version overrides – belt-and-suspenders in case an old AppDefaults
 # entry in the prefix overrides the global "Version" key for any Backblaze exe.
