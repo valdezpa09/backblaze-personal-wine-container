@@ -25,30 +25,51 @@ ENV DISPLAY=:0
 # win11 winetricks verb requires a 64-bit prefix
 ENV WINEARCH win64
 
-RUN apt-get update && \
-    apt-get install -y curl software-properties-common gnupg2 winbind xvfb 7zip cabextract \
-        python3 python3-pefile && \
+RUN \
+    # Step 1 — base tools + enable universe so python3-pefile is resolvable
+    apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository universe && \
+    apt-get update && \
+    apt-get install -y \
+        curl \
+        gnupg2 \
+        winbind \
+        xvfb \
+        7zip \
+        cabextract \
+        python3 \
+        python3-pefile \
+        locales && \
+    # Step 2 — enable i386 BEFORE the WineHQ repo is added so apt can
+    #           resolve wine:i386 dependencies in the same apt-get run
     dpkg --add-architecture i386 && \
     mkdir -pm755 /etc/apt/keyrings && \
-    curl -fsSL https://dl.winehq.org/wine-builds/winehq.key | gpg --dearmor -o /etc/apt/keyrings/winehq-archive.key && \
+    curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+        | gpg --dearmor -o /etc/apt/keyrings/winehq-archive.key && \
     echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/ubuntu/ noble main" \
         > /etc/apt/sources.list.d/winehq.list && \
     apt-get update && \
-    apt-get install -y winehq-stable=10.0* && \
+    # No version glob — let apt resolve the latest stable available for Noble
+    apt-get install -y --install-recommends winehq-stable && \
+    # Step 3 — fresh winetricks from upstream (distro package is always stale)
     curl -fsSL https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
         -o /usr/local/bin/winetricks && \
     chmod +x /usr/local/bin/winetricks && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y locales && \
+    # Step 4 — locale
     sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
     dpkg-reconfigure --frontend=noninteractive locales && \
-    update-locale LANG=en_US.UTF-8
+    update-locale LANG=en_US.UTF-8 && \
+    # Step 5 — clean up apt cache to keep image size down
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 EXPOSE 5900
 
-# rootfs/ contains:
+# rootfs/ layout expected:
 #   startapp.sh                          — main startup script
-#   PINNED_BZ_VERSION                    — fallback pinned Backblaze version + URL
-#   usr/local/bin/patch_pe_manifest.py   — PE manifest patcher for Win10 GUID
+#   PINNED_BZ_VERSION                    — pinned Backblaze version + URL
+#   usr/local/bin/patch_pe_manifest.py   — PE manifest patcher (Win10 GUID)
 COPY rootfs/ /
 
 RUN chmod +x /startapp.sh && \
