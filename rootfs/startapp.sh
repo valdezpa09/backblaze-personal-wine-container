@@ -79,6 +79,23 @@ wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion
 wine reg add "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion" /v "InstallationType" /t REG_SZ /d "Client" /f 2>/dev/null
 log_message "WINE: WOW6432Node Windows 11 registry keys enforced (32-bit app path)"
 
+# Backblaze queries Win32_OperatingSystem via WMI (wbemprox) rather than
+# GetVersionEx. Wine's wbemprox calls RtlGetProductInfo with a hardcoded
+# version 6 internally, bypassing our registry keys entirely.
+# The only way to fix this is to override the wbemprox mof data via registry
+# so that Win32_OperatingSystem.ProductType returns 1 (Workstation/WinNT)
+# and the version fields return Windows 10/11 values.
+wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions"     /v "ProductType" /t REG_SZ /d "WinNT" /f 2>/dev/null
+wine reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\ProductOptions"     /v "ProductSuite" /t REG_MULTI_SZ /d "Terminal Server" /f 2>/dev/null
+# Override the Version key that wbemprox reads directly for Win32_OperatingSystem
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"     /v "CurrentBuild" /t REG_SZ /d "22621" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"     /v "CSDVersion" /t REG_SZ /d "" /f 2>/dev/null
+# wbemprox also reads these for Caption and Version fields
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"     /v "CSDBuildNumber" /t REG_SZ /d "1" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"     /v "BuildLab" /t REG_SZ /d "22621.ni_release.220506-1250" /f 2>/dev/null
+wine reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"     /v "BuildLabEx" /t REG_SZ /d "22621.1.amd64fre.ni_release.220506-1250" /f 2>/dev/null
+log_message "WINE: wbemprox Win32_OperatingSystem registry overrides applied"
+
 # Per-app version overrides – belt-and-suspenders in case an old AppDefaults
 # entry in the prefix overrides the global "Version" key for any Backblaze exe.
 wine reg add "HKCU\\Software\\Wine\\AppDefaults\\install_backblaze.exe" /v "Version" /t REG_SZ /d "win11" /f 2>/dev/null
